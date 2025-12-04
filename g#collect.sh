@@ -65,6 +65,19 @@ CREATE_BUNDLE="yes"
 # Note: This is usually not needed for production binaries compiled with -O3
 CREATE_SYMBOL_ARCHIVE="no"
 
+# Auto-upload configuration
+# When enabled, automatically uploads the bundle to a central server after collection
+AUTO_UPLOAD="yes"
+
+# Upload server URL (include /upload endpoint)
+UPLOAD_SERVER_URL="http://www.server.com/upload"
+
+# Upload authentication token
+UPLOAD_TOKEN="secret123"
+
+# Upload timeout in seconds (for large files over slow connections)
+UPLOAD_TIMEOUT=300
+
 ################################################################################
 # END OF CONFIGURATION
 ################################################################################
@@ -119,6 +132,9 @@ KEY PARAMETERS:
     MANUAL_CORES        Core specification if CORE_MODE="manual" (e.g., "1-30,33-62")
     CREATE_BUNDLE       Create tar.gz bundle of all outputs (yes/no)
     CREATE_SYMBOL_ARCHIVE  Create symbol archive (yes/no)
+    AUTO_UPLOAD         Automatically upload bundle to server (yes/no)
+    UPLOAD_SERVER_URL   Upload endpoint URL (e.g., http://www.server.com/upload)
+    UPLOAD_TOKEN        Authentication token for upload server
 
 CORE DETECTION:
     In "auto" mode, the script reads /proc/cmdline to detect isolated cores
@@ -219,6 +235,12 @@ check_dependencies() {
         INCLUDE_TURBOSTAT="no"
     fi
     
+    if [ "$AUTO_UPLOAD" = "yes" ] && ! command -v curl &> /dev/null; then
+        log_warning "curl not found. Auto-upload will be skipped."
+        log_warning "To enable auto-upload: apt-get install curl"
+        AUTO_UPLOAD="no"
+    fi
+    
     if [ $missing_deps -eq 1 ]; then
         log_error "Missing required dependencies. Please install them and try again."
         exit 1
@@ -256,6 +278,102 @@ detect_isolated_cores() {
     
     log_success "Detected isolated cores: $isolated_cores"
     echo "$isolated_cores"
+}
+
+upload_bundle() {
+    local bundle_path="$1"
+    
+    if [ ! -f "$bundle_path" ]; then
+        log_error "Bundle file not found: $bundle_path"
+        return 1
+    fi
+    
+    # Check if curl is available
+    if ! command -v curl &> /dev/null; then
+        log_warning "curl not found - cannot auto-upload"
+        log_info "Please transfer the bundle manually: $bundle_path"
+        return 1
+    fi
+    
+    local hostname=$(hostname)
+    local filename=$(basename "$bundle_path")
+    local filesize=$(stat -c%s "$bundle_path" 2>/dev/null || stat -f%z "$bundle_path" 2>/dev/null)
+    local filesize_mb=$((filesize / 1024 / 1024))
+    
+    log_info "Uploading bundle to ${UPLOAD_SERVER_URL}..."
+    log_info "  File: ${filename} (${filesize_mb} MB)"
+    log_info "  Hostname: ${hostname}"
+    
+    # Perform upload with curl
+    local response
+    local http_code
+    
+    response=$(curl --silent --show-error \
+        --max-time "${UPLOAD_TIMEOUT}" \
+        --write-out "\n%{http_code}" \
+        -X POST \
+        -H "X-Upload-Token: ${UPLOAD_TOKEN}" \
+        -F "file=@${bundle_path}" \
+        -F "hostname=${hostname}" \
+        "${UPLOAD_SERVER_URL}" 2>&1)
+    
+    local curl_exit=$?
+    
+    # Extract HTTP code (last line) and response body
+    http_code=$(echo "$response" | tail -n1)
+    local body=$(echo "$response" | sed '$d')
+    
+    # Check for curl errors
+    if [ $curl_exit -ne 0 ]; then
+        log_error "Upload failed - network error (curl exit code: $curl_exit)"
+        case $curl_exit in
+            6)  log_error "  Could not resolve host: ${UPLOAD_SERVER_URL}" ;;
+            7)  log_error "  Failed to connect to server" ;;
+            28) log_error "  Connection timed out after ${UPLOAD_TIMEOUT}s" ;;
+            *)  log_error "  Error details: $body" ;;
+        esac
+        echo ""
+        log_warning "Auto-upload failed. Please transfer the bundle manually:"
+        echo "  scp ${bundle_path} user@server:/path/to/destination/"
+        echo ""
+        return 1
+    fi
+    
+    # Check HTTP response code
+    case "$http_code" in
+        200)
+            log_success "Upload successful!"
+            # Try to parse JSON response for checksum
+            local checksum=$(echo "$body" | grep -oP '"checksum"\s*:\s*"\K[^"]+' || echo "")
+            if [ -n "$checksum" ]; then
+                log_info "  Server checksum: ${checksum:0:16}..."
+            fi
+            return 0
+            ;;
+        403)
+            log_error "Upload failed - authentication error (invalid token)"
+            ;;
+        400)
+            log_error "Upload failed - bad request"
+            log_error "  Server response: $body"
+            ;;
+        413)
+            log_error "Upload failed - file too large for server"
+            ;;
+        5*)
+            log_error "Upload failed - server error (HTTP $http_code)"
+            ;;
+        *)
+            log_error "Upload failed - unexpected response (HTTP $http_code)"
+            log_error "  Response: $body"
+            ;;
+    esac
+    
+    echo ""
+    log_warning "Auto-upload failed. Please transfer the bundle manually:"
+    echo "  scp ${bundle_path} user@server:/path/to/destination/"
+    echo ""
+    return 1
 }
 
 generate_filenames() {
@@ -435,7 +553,11 @@ cleanup() {
         echo "Output bundle:"
         echo "  ${BUNDLE_FILE}"
         echo ""
-        echo "Transfer this file for analysis"
+        
+        # Auto-upload if enabled
+        if [ "$AUTO_UPLOAD" = "yes" ]; then
+            upload_bundle "$BUNDLE_FILE"
+        fi
     else
         echo "Output files:"
         if [ -f "$PERF_FILE" ]; then

@@ -67,7 +67,7 @@ CREATE_SYMBOL_ARCHIVE="no"
 
 # Auto-upload configuration
 # When enabled, automatically uploads the bundle to a central server after collection
-AUTO_UPLOAD="yes"
+AUTO_UPLOAD="no"
 
 # Upload server URL (include /upload endpoint)
 UPLOAD_SERVER_URL="http://www.server.com/upload"

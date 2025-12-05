@@ -18,8 +18,8 @@
 ################################################################################
 
 ################################################################################
-# CONFIGURATION PARAMETERS
-# Edit these values as needed before running the script
+# DEFAULT CONFIGURATION
+# These defaults can be overridden via command-line arguments
 ################################################################################
 
 # Perf events to record (comma-separated)
@@ -52,6 +52,9 @@ PERF_EXTRA_OPTS="-T"
 # Include turbostat output (yes/no)
 INCLUDE_TURBOSTAT="yes"
 
+# Include lscpu output (yes/no)
+INCLUDE_LSCPU="yes"
+
 # Turbostat sample iterations (if included)
 # Turbostat will collect data for this many times during info gathering phase
 TURBOSTAT_ITERATIONS=5
@@ -66,7 +69,6 @@ CREATE_BUNDLE="yes"
 CREATE_SYMBOL_ARCHIVE="no"
 
 # Auto-upload configuration
-# When enabled, automatically uploads the bundle to a central server after collection
 AUTO_UPLOAD="no"
 
 # Upload server URL (include /upload endpoint)
@@ -79,7 +81,7 @@ UPLOAD_TOKEN="secret123"
 UPLOAD_TIMEOUT=300
 
 ################################################################################
-# END OF CONFIGURATION
+# END OF DEFAULT CONFIGURATION
 ################################################################################
 
 # Script metadata
@@ -108,86 +110,99 @@ TARGET_CORES=""
 print_help() {
     cat << EOF
 ${SCRIPT_NAME} v${SCRIPT_VERSION} - Performance Data Collection Script
+Copyright (c) 2025 Cirrus360 
 
 DESCRIPTION:
     Collects performance data using perf and system information for analysis.
-    Designed to run during 5G test scenarios to 
-    capture CPU performance metrics.
+    Designed to run during 5G test scenarios to capture CPU performance metrics.
 
 USAGE:
     sudo ./g#collect.sh [OPTIONS]
 
 OPTIONS:
-    -h, --help          Show this help message and exit
+    -h, --help              Show this help message and exit
+    -v, --version           Show version and exit
 
-CONFIGURATION:
-    All parameters are configured by editing the variables at the top of this
-    script. Do NOT use command-line switches for configuration.
+  Collection Settings:
+    -e, --events EVENTS     Perf events to record (comma-separated)
+                            Default: cycles/period=100000/,instructions/period=100000/,...
+    -d, --duration SECS     Collection duration in seconds (0 = manual stop)
+                            Default: 0 (press Ctrl+C to stop)
+    -l, --label LABEL       Label for output filenames (recommended)
+                            Example: -l "5g_test_run1"
+    -o, --output DIR        Output directory
+                            Default: current directory
 
-KEY PARAMETERS:
-    PERF_EVENTS         Events to record (e.g., cycles,instructions,cache-misses)
-    COLLECTION_DURATION Duration in seconds (0 = manual stop only)
-    TEST_LABEL          Optional label for output filenames (recommended)
-    CORE_MODE           "auto" to detect isolated cores, "manual" for manual spec
-    MANUAL_CORES        Core specification if CORE_MODE="manual" (e.g., "1-30,33-62")
-    CREATE_BUNDLE       Create tar.gz bundle of all outputs (yes/no)
-    CREATE_SYMBOL_ARCHIVE  Create symbol archive (yes/no)
-    AUTO_UPLOAD         Automatically upload bundle to server (yes/no)
-    UPLOAD_SERVER_URL   Upload endpoint URL (e.g., http://www.server.com/upload)
-    UPLOAD_TOKEN        Authentication token for upload server
+  Core Selection:
+    -c, --cores CORES       Manually specify cores to monitor (e.g., "1-30,33-62")
+                            Implies manual core mode
+    -a, --all-cores         Monitor all cores (system-wide collection)
+                            Overrides auto-detection of isolated cores
+    --auto                  Auto-detect isolated cores from /proc/cmdline (default)
+
+  Additional Options:
+    --perf-opts OPTS        Extra perf record options (default: "-T")
+    --turbostat             Include turbostat output (default)
+    --no-turbostat          Skip turbostat collection
+    --turbostat-iter N      Turbostat iterations (default: 5)
+    --bundle                Create tar.gz bundle (default)
+    --no-bundle             Don't create bundle, keep individual files
+    --symbols               Create symbol archive for offline analysis
+    --no-symbols            Don't create symbol archive (default)
+
+  Auto-Upload:
+    --upload                Enable auto-upload after collection
+    --upload-url URL        Upload server URL (default: http://www.server.com/upload)
+    --upload-token TOKEN    Upload authentication token
+    --upload-timeout SECS   Upload timeout in seconds (default: 300)
 
 CORE DETECTION:
-    In "auto" mode, the script reads /proc/cmdline to detect isolated cores
-    (isolcpus= parameter) and automatically collects data from those cores only.
+    By default (--auto), the script reads /proc/cmdline to detect isolated cores
+    (isolcpus= parameter) and collects data from those cores only.
     If no isolated cores are detected, falls back to system-wide collection.
 
 COLLECTION MODES:
-    1. Timed collection: Set COLLECTION_DURATION to number of seconds
-       Example: COLLECTION_DURATION=60 (collects for 60 seconds)
+    1. Timed collection: Use -d/--duration with number of seconds
+       Example: -d 60 (collects for 60 seconds)
     
-    2. Manual stop: Set COLLECTION_DURATION=0 and stop with Ctrl+C
-       Example: COLLECTION_DURATION=0 (press Ctrl+C when test completes)
+    2. Manual stop: Use -d 0 (default) and stop with Ctrl+C
+       Press Ctrl+C when test completes
 
 OUTPUT FILES:
-    [LABEL]_perf_YYYYMMDD_HHMMSS.data  - Performance data (perf.data format)
-    [LABEL]_info_YYYYMMDD_HHMMSS.txt   - System information and configuration
-    
-    If CREATE_BUNDLE="yes":
-    [LABEL]_gcollect_YYYYMMDD_HHMMSS.tar.gz - Compressed bundle of all files
-    
-    If CREATE_SYMBOL_ARCHIVE="yes":
-    [LABEL]_perf_YYYYMMDD_HHMMSS.data.tar.bz2 - Symbol archive (optional)
+    <hostname>_[LABEL]_perf_YYYYMMDD_HHMMSS.data  - Performance data (perf.data format)
+    <hostname>_[LABEL]_info_YYYYMMDD_HHMMSS.txt   - System information and configuration
+    <hostname>_[LABEL]_gcollect_YYYYMMDD_HHMMSS.tar.gz - Bundle (if --bundle)
 
-TIMING RECOMMENDATIONS:
-    For best results with 5G tests:
-    
-    • Start script BEFORE starting the 5G test
-    • For timed mode: Set COLLECTION_DURATION to cover entire test duration
-    • For manual mode: Press Ctrl+C immediately after test completes
-    • Script will cleanly finalize data collection on Ctrl+C
-    
-    Example workflow (manual mode):
-      1. Edit script: set COLLECTION_DURATION=0 and TEST_LABEL="my_test"
-      2. Run: sudo ./gcollect.sh
-      3. Wait for "Data collection is now running..." message
-      4. Start your 5G test
-      5. Wait for test to complete
-      6. Press Ctrl+C to stop collection
-      7. Transfer the generated .tar.gz bundle for analysis
+EXAMPLES:
+    # Basic collection with label (manual stop with Ctrl+C)
+    sudo ./g#collect.sh -l my_test
+
+    # Timed 60-second collection
+    sudo ./g#collect.sh -l peak_load -d 60
+
+    # Collect from specific cores
+    sudo ./g#collect.sh -l worker_cores -c "1-30,33-62" -d 120
+
+    # Collect with custom events
+    sudo ./g#collect.sh -l cache_test -e "cycles,cache-misses,LLC-load-misses"
+
+    # Full collection with auto-upload
+    sudo ./g#collect.sh -l production_run -d 300 --upload --upload-url http://myserver/upload
+
+    # System-wide collection (all cores)
+    sudo ./g#collect.sh -l full_system -a -d 60
 
 REQUIREMENTS:
-    • Root privileges (or CAP_SYS_ADMIN + CAP_PERFMON capabilities)
-    • perf tool installed (linux-tools-common or similar package)
-    • lscpu command available (util-linux package)
-    • turbostat available if INCLUDE_TURBOSTAT="yes" (linux-tools-common)
-    • Sufficient disk space for perf data files (can be 100s of MB)
-
-NOTES:
-    • Data collection has small performance impact (<5%)
-    • The .data files can be large (100s of MB for long collections)
-    • For production binaries (compiled with -O3), symbol archives are typically not needed
+    - Root privileges (or CAP_SYS_ADMIN + CAP_PERFMON capabilities)
+    - perf tool installed (linux-tools-common or similar package)
+    - turbostat available for --turbostat (linux-tools-common)
+    - curl available for --upload
 
 EOF
+}
+
+print_version() {
+    echo "${SCRIPT_NAME} v${SCRIPT_VERSION}"
 }
 
 log_info() {
@@ -206,10 +221,119 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        # Handle --option=value format
+        if [[ "$1" == *"="* ]]; then
+            arg="${1%%=*}"
+            val="${1#*=}"
+            set -- "$arg" "$val" "${@:2}"
+        fi
+        
+        case $1 in
+            -h|--help)
+                print_help
+                exit 0
+                ;;
+            -v|--version)
+                print_version
+                exit 0
+                ;;
+            -e|--events)
+                PERF_EVENTS="$2"
+                shift 2
+                ;;
+            -d|--duration)
+                COLLECTION_DURATION="$2"
+                shift 2
+                ;;
+            -l|--label)
+                TEST_LABEL="$2"
+                shift 2
+                ;;
+            -o|--output)
+                OUTPUT_DIR="$2"
+                shift 2
+                ;;
+            -c|--cores)
+                MANUAL_CORES="$2"
+                CORE_MODE="manual"
+                shift 2
+                ;;
+            -a|--all-cores)
+                CORE_MODE="all"
+                shift
+                ;;
+            --auto)
+                CORE_MODE="auto"
+                shift
+                ;;
+            --perf-opts)
+                PERF_EXTRA_OPTS="$2"
+                shift 2
+                ;;
+            --turbostat)
+                INCLUDE_TURBOSTAT="yes"
+                shift
+                ;;
+            --no-turbostat)
+                INCLUDE_TURBOSTAT="no"
+                shift
+                ;;
+            --turbostat-iter)
+                TURBOSTAT_ITERATIONS="$2"
+                shift 2
+                ;;
+            --bundle)
+                CREATE_BUNDLE="yes"
+                shift
+                ;;
+            --no-bundle)
+                CREATE_BUNDLE="no"
+                shift
+                ;;
+            --symbols)
+                CREATE_SYMBOL_ARCHIVE="yes"
+                shift
+                ;;
+            --no-symbols)
+                CREATE_SYMBOL_ARCHIVE="no"
+                shift
+                ;;
+            --upload)
+                AUTO_UPLOAD="yes"
+                shift
+                ;;
+            --upload-url)
+                UPLOAD_SERVER_URL="$2"
+                shift 2
+                ;;
+            --upload-token)
+                UPLOAD_TOKEN="$2"
+                shift 2
+                ;;
+            --upload-timeout)
+                UPLOAD_TIMEOUT="$2"
+                shift 2
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                echo "Use -h or --help for usage information"
+                exit 1
+                ;;
+            *)
+                log_error "Unexpected argument: $1"
+                echo "Use -h or --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
+}
+
 check_root() {
     if [ "$EUID" -ne 0 ]; then
         log_error "This script must be run as root or with sudo"
-        log_info "Try: sudo $0"
+        log_info "Try: sudo $0 $*"
         exit 1
     fi
 }
@@ -224,9 +348,9 @@ check_dependencies() {
     fi
     
     if ! command -v lscpu &> /dev/null; then
-        log_error "lscpu command not found"
-        log_error "Install with: apt-get install util-linux"
-        missing_deps=1
+        log_warning "lscpu not found. Will skip CPU info collection."
+        log_warning "To include lscpu output: apt-get install util-linux"
+        INCLUDE_LSCPU="no"
     fi
     
     if [ "$INCLUDE_TURBOSTAT" = "yes" ] && ! command -v turbostat &> /dev/null; then
@@ -378,15 +502,18 @@ upload_bundle() {
 
 generate_filenames() {
     local timestamp=$(date +"%Y%m%d_%H%M%S")
-    local label_part=""
+    local host=$(hostname -s 2>/dev/null || hostname)
+    local prefix=""
     
     if [ -n "$TEST_LABEL" ]; then
-        label_part="${TEST_LABEL}_"
+        prefix="${host}_${TEST_LABEL}"
+    else
+        prefix="${host}"
     fi
     
-    PERF_FILE="${OUTPUT_DIR}/${label_part}perf_${timestamp}.data"
-    INFO_FILE="${OUTPUT_DIR}/${label_part}info_${timestamp}.txt"
-    BUNDLE_FILE="${OUTPUT_DIR}/${label_part}gcollect_${timestamp}.tar.gz"
+    PERF_FILE="${OUTPUT_DIR}/${prefix}_perf_${timestamp}.data"
+    INFO_FILE="${OUTPUT_DIR}/${prefix}_info_${timestamp}.txt"
+    BUNDLE_FILE="${OUTPUT_DIR}/${prefix}_gcollect_${timestamp}.tar.gz"
 }
 
 write_info_header() {
@@ -399,6 +526,7 @@ write_info_header() {
 SCRIPT INFORMATION:
   Script Name: ${SCRIPT_NAME}
   Script Version: ${SCRIPT_VERSION}
+  Hostname: $(hostname)
   Collection Start: $(date '+%Y-%m-%d %H:%M:%S %Z')
 
 COLLECTION CONFIGURATION:
@@ -436,7 +564,11 @@ collect_system_info() {
         echo "================================================================================"
         echo "CPU INFORMATION (lscpu)"
         echo "================================================================================"
-        lscpu
+        if [ "$INCLUDE_LSCPU" = "yes" ]; then
+            lscpu
+        else
+            echo "(lscpu not available)"
+        fi
         echo ""
         echo ""
         
@@ -586,10 +718,14 @@ start_perf_collection() {
             core_spec="-a"
             TARGET_CORES="all (system-wide)"
         fi
+    elif [ "$CORE_MODE" = "all" ]; then
+        core_spec="-a"
+        TARGET_CORES="all (system-wide)"
     else
+        # Manual mode
         if [ -z "$MANUAL_CORES" ]; then
-            log_error "CORE_MODE is 'manual' but MANUAL_CORES is not set"
-            log_error "Please set MANUAL_CORES in the configuration section"
+            log_error "Manual core mode but no cores specified"
+            log_error "Use -c/--cores to specify cores (e.g., -c \"1-30,33-62\")"
             exit 1
         fi
         TARGET_CORES="$MANUAL_CORES"
@@ -650,10 +786,7 @@ start_perf_collection() {
 ################################################################################
 
 # Parse command line arguments
-if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    print_help
-    exit 0
-fi
+parse_args "$@"
 
 # Set up signal handlers
 trap cleanup SIGINT SIGTERM
@@ -669,6 +802,9 @@ echo ""
 # Pre-flight checks
 check_root
 check_dependencies
+
+# Create output directory if needed
+mkdir -p "$OUTPUT_DIR"
 
 # Generate output filenames
 generate_filenames
@@ -712,7 +848,6 @@ else
         if ! kill -0 $PERF_PID 2>/dev/null; then
             # Check if process was interrupted by user (cleanup sets CLEANUP_DONE=1)
             if [ $CLEANUP_DONE -eq 1 ]; then
-                # log_info "Collection stopped early at ${elapsed}s (user interrupt)"
                 exit 0
             else
                 log_error "Perf process terminated unexpectedly"
